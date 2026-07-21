@@ -1,0 +1,14 @@
+{
+  "name": "websac-sync",
+  "version": "1.0.0",
+  "description": "Sincroniza produtos do WebSac para um products.json consumido pela vitrine estática.",
+  "main": "sync-websac.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "sync": "node sync-websac.js"
+  },
+  "dependencies": {}
+}
