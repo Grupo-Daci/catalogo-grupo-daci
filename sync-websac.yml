@@ -1,0 +1,38 @@
+name: Sincronizar produtos do WebSac
+
+# Roda a cada 30 minutos, e também permite disparo manual pela aba Actions.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Rodar sincronização com o WebSac
+        env:
+          WEBSAC_BASE_URL: ${{ secrets.WEBSAC_BASE_URL }}
+          WEBSAC_CNPJ: ${{ secrets.WEBSAC_CNPJ }}
+          WEBSAC_TOKEN: ${{ secrets.WEBSAC_TOKEN }}
+          OUTPUT_PATH: ${{ github.workspace }}/output/products.json
+        run: node sync-websac.js
+
+      # Publica o products.json de volta no repositório (ex.: servido via GitHub Pages).
+      # Se preferir publicar em outro lugar (S3, bucket, servidor próprio), troque este
+      # passo por um "aws s3 cp", "scp", ou chamada à API do seu storage.
+      - name: Commitar products.json atualizado
+        run: |
+          git config user.name "websac-sync-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add output/products.json
+          git diff --quiet --cached || git commit -m "chore: atualizar products.json via sincronização com WebSac"
+          git push
