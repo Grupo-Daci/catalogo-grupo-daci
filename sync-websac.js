@@ -23,6 +23,10 @@ const CONFIG = {
   token: process.env.WEBSAC_TOKEN || '',
   outputPath: process.env.OUTPUT_PATH || path.join(__dirname, 'output', 'products.json'),
   fullSync: process.env.FULL_SYNC === 'true',
+  // Buscar a foto de cada produto deixa a sincronização mais lenta (uma chamada extra por
+  // produto). Pode desligar temporariamente definindo FETCH_PHOTOS=false, se precisar de
+  // uma sincronização mais rápida enquanto testa outras coisas.
+  fetchPhotos: process.env.FETCH_PHOTOS !== 'false',
 };
 
 function assertConfig() {
@@ -68,6 +72,35 @@ async function fetchProductList() {
   }
 }
 
+// Busca a foto de um produto e devolve como data URI (base64), pronta para embutir
+// direto no products.json — assim o navegador do visitante nunca precisa do
+// token/cnpj do WebSac para ver as imagens.
+async function fetchProductPhoto(id) {
+  try {
+    const url = `${CONFIG.baseUrl.replace(/\/$/, '')}/produto/${id}/foto`;
+    const res = await fetch(url, { headers: websacHeaders() });
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    if (!contentType.startsWith('image/')) return null;
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return `data:${contentType};base64,${buffer.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+// Busca fotos em lotes pequenos (em vez de 500 chamadas ao mesmo tempo), para não
+// sobrecarregar a API do WebSac nem estourar limites de conexões simultâneas.
+async function fetchPhotosInBatches(ids, batchSize = 8) {
+  const photoById = new Map();
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const batch = ids.slice(i, i + batchSize);
+    const results = await Promise.all(batch.map((id) => fetchProductPhoto(id)));
+    batch.forEach((id, idx) => photoById.set(id, results[idx]));
+  }
+  return photoById;
+}
+
 function computeFaixaEstoque(estoque, estoquePlus) {
   if (estoquePlus || estoque > 500) return 'Mais de 500 un.';
   if (estoque === 0) return 'Esgotado';
@@ -85,23 +118,36 @@ function computeFaixaPreco(preco) {
   return 'Acima de R$ 250';
 }
 
+// Mapeamento confirmado a partir da resposta real do WebSac (produto de exemplo
+// inspecionado em 21/07/2026). Campos como "marca" e "departamento" vêm como
+// objetos {id, descricao} — por isso usamos ".descricao".
 function mapWebsacProduct(raw) {
-  const codigo = String(raw.codigo ?? raw.id ?? '');
-  const ean = String(raw.codean ?? raw.ean ?? '');
-  const descricao = raw.descricao ?? raw.nome ?? '';
-  const marca = raw.marca ?? raw.fabricante ?? '';
-  const linha = raw.linha ?? raw.colecao ?? '';
-  const preco = Number(raw.preco ?? raw.precoVenda ?? 0);
-  const precoBase = Number(raw.precoBase ?? preco);
-  const estoque = Number(raw.estoque ?? raw.quantidadeEstoque ?? 0);
+  const codigo = String(raw.id ?? '');
+  const ean = Array.isArray(raw.gtin) && raw.gtin.length ? String(raw.gtin[0]) : '';
+  const descricao = raw.descricao_completa || raw.descricao_resumida || '';
+  const marca = (raw.marca && raw.marca.descricao) || '';
+  // TODO: "tipo_item" (Mochila, Bolsa, Garrafa, Copo, Estojo, Sacola...) não tem um campo
+  // exato equivalente no WebSac. Por ora usamos o departamento/grupo como aproximação —
+  // vale revisar com calma depois e, se precisar, ajustar a lista de filtros na interface
+  // para bater com as categorias reais do WebSac.
+  const tipoItem = (raw.departamento && raw.departamento.descricao)
+    || (raw.grupo && raw.grupo.descricao)
+    || 'Outros';
+
+  const precoVarejo = Number(raw.preco_varejo || 0);
+  const precoOferta = Number(raw.preco_varejo_oferta || 0);
+  const preco = precoOferta > 0 ? precoOferta : precoVarejo;
+  const precoBase = precoVarejo;
+
+  const estoque = Number(raw.estoque_atual ?? 0);
   const estoquePlus = estoque >= 500;
-  const disponibilidade = raw.disponibilidade ?? (estoque > 0 ? 'Pronta Entrega' : '90 dias');
-  const tipoItem = raw.tipoItem ?? raw.categoria ?? 'Outros';
-  const imagem = raw.fotoUrl || `${CONFIG.baseUrl}/produto/${raw.id ?? codigo}/foto`;
+  const disponibilidade = raw.ativo === false
+    ? '90 dias'
+    : (estoque > 0 ? 'Pronta Entrega' : '90 dias');
 
   return {
     marca,
-    linha,
+    linha: '',
     codigo,
     ean,
     descricao,
@@ -110,11 +156,31 @@ function mapWebsacProduct(raw) {
     preco,
     preco_base: precoBase,
     disponibilidade,
-    imagem,
+    imagem: '', // preenchido depois, em anexarFotos()
     faixa_preco: computeFaixaPreco(preco),
     faixa_estoque: computeFaixaEstoque(estoque, estoquePlus),
     tipo_item: tipoItem,
+    _id: raw.id, // usado internamente só para buscar a foto; não aparece na interface
   };
+}
+
+async function anexarFotos(products) {
+  if (!CONFIG.fetchPhotos) {
+    console.log('[sync-websac] FETCH_PHOTOS=false — pulando busca de fotos.');
+    return products;
+  }
+  console.log(`[sync-websac] Buscando fotos de ${products.length} produto(s)...`);
+  const ids = products.map((p) => p._id);
+  const photoById = await fetchPhotosInBatches(ids);
+  let comFoto = 0;
+  const result = products.map((p) => {
+    const foto = photoById.get(p._id);
+    if (foto) comFoto++;
+    const { _id, ...rest } = p;
+    return { ...rest, imagem: foto || '' };
+  });
+  console.log(`[sync-websac] ${comFoto}/${products.length} produto(s) com foto encontrada.`);
+  return result;
 }
 
 function readExistingProducts() {
@@ -152,10 +218,8 @@ async function main() {
   const rawArray = Array.isArray(rawList) ? rawList : rawList.produtos || rawList.data || [];
   console.log(`[sync-websac] ${rawArray.length} produto(s) recebido(s) do WebSac.`);
 
-  console.log('--- EXEMPLO DE PRODUTO CRU DO WEBSAC ---');
-  console.log(JSON.stringify(rawArray[0], null, 2));
-  
-  const mapped = rawArray.map(mapWebsacProduct);
+  let mapped = rawArray.map(mapWebsacProduct);
+  mapped = await anexarFotos(mapped);
 
   const existing = CONFIG.fullSync ? [] : readExistingProducts();
   const finalList = CONFIG.fullSync ? mapped : mergeProducts(existing, mapped);
