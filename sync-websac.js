@@ -81,6 +81,7 @@ async function fetchProductPhoto(id) {
     const res = await fetch(url, { headers: websacHeaders() });
     if (!res.ok) return null;
     const contentType = res.headers.get('content-type') || 'image/jpeg';
+    console.log(`[debug-foto] id=${id} status=${res.status} content-type=${res.headers.get('content-type')}`);
     if (!contentType.startsWith('image/')) return null;
     const buffer = Buffer.from(await res.arrayBuffer());
     return `data:${contentType};base64,${buffer.toString('base64')}`;
