@@ -152,6 +152,9 @@ async function main() {
   const rawArray = Array.isArray(rawList) ? rawList : rawList.produtos || rawList.data || [];
   console.log(`[sync-websac] ${rawArray.length} produto(s) recebido(s) do WebSac.`);
 
+  console.log('--- EXEMPLO DE PRODUTO CRU DO WEBSAC ---');
+  console.log(JSON.stringify(rawArray[0], null, 2));
+  
   const mapped = rawArray.map(mapWebsacProduct);
 
   const existing = CONFIG.fullSync ? [] : readExistingProducts();
