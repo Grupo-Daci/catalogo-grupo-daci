@@ -82,6 +82,10 @@ async function fetchProductPhoto(id) {
     if (!res.ok) return null;
     const contentType = res.headers.get('content-type') || 'image/jpeg';
     console.log(`[debug-foto] id=${id} status=${res.status} content-type=${res.headers.get('content-type')}`);
+    if (id === 5001) {
+         const bodyText = await res.clone().text();
+         console.log(`[debug-foto-body] ${bodyText.slice(0, 500)}`);
+       }
     if (!contentType.startsWith('image/')) return null;
     const buffer = Buffer.from(await res.arrayBuffer());
     return `data:${contentType};base64,${buffer.toString('base64')}`;
